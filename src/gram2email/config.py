@@ -86,6 +86,33 @@ class User:
 
 
 @dataclass
+class InstagramAuthSettings:
+    """Instagram authentication credentials and session parameters.
+
+    Parameters
+    ----------
+    username : str, default ""
+        Instagram account username for login or session identification.
+    password : str, default ""
+        Instagram account password for login.
+    session_id : str, default ""
+        Session ID cookie string from a logged-in browser session.
+    session_file : str or None, default None
+        File path to an existing or output Instaloader session file.
+    api_key : str, default ""
+        Optional developer API key or third-party scraper API token.
+    """
+
+    username: str = field(
+        default_factory=lambda: os.getenv("INSTAGRAM_USERNAME", os.getenv("INSTAGRAM_USER", ""))
+    )
+    password: str = field(default_factory=lambda: os.getenv("INSTAGRAM_PASSWORD", ""))
+    session_id: str = field(default_factory=lambda: os.getenv("INSTAGRAM_SESSION_ID", ""))
+    session_file: str | None = field(default_factory=lambda: os.getenv("INSTAGRAM_SESSION_FILE", None))
+    api_key: str = field(default_factory=lambda: os.getenv("INSTAGRAM_API_KEY", ""))
+
+
+@dataclass
 class AppSettings:
     """Top-level configuration settings for gram2email.
 
@@ -99,12 +126,18 @@ class AppSettings:
         Optional list of email addresses to receive post notifications.
     smtp : SMTPSettings
         SMTP server connection details.
+    instagram : InstagramAuthSettings
+        Instagram authentication credentials and session details.
     max_posts_per_account : int, default 5
         Maximum number of recent posts to inspect per account per run.
     state_file : str, default "seen_posts.json"
         Path to the JSON file tracking already seen post shortcodes.
+    session_id : str, default ""
+        Shortcut for instagram.session_id.
     session_file : str or None, default None
-        Optional path to an Instaloader session file for authenticated requests.
+        Shortcut for instagram.session_file.
+    instagram_user : str, default ""
+        Shortcut for instagram.username.
     download_media : bool, default True
         Whether to download and embed media directly into the email body.
     dry_run : bool, default False
@@ -119,6 +152,7 @@ class AppSettings:
     users: list[User] = field(default_factory=list)
     recipients: list[str] = field(default_factory=list)
     smtp: SMTPSettings = field(default_factory=SMTPSettings)
+    instagram: InstagramAuthSettings = field(default_factory=InstagramAuthSettings)
     max_posts_per_account: int = 5
     state_file: str = "seen_posts.json"
     session_id: str = field(default_factory=lambda: os.getenv("INSTAGRAM_SESSION_ID", ""))
@@ -153,3 +187,37 @@ class AppSettings:
             Path to the state persistence file.
         """
         return Path(self.state_file).expanduser().resolve()
+
+    @property
+    def effective_instagram_auth(self) -> InstagramAuthSettings:
+        """Return the unified Instagram authentication settings.
+
+        Returns
+        -------
+        InstagramAuthSettings
+            Consolidated credentials combining top-level shortcuts and nested fields.
+        """
+        username = self.instagram.username or self.instagram_user
+        password = self.instagram.password
+        session_id = self.instagram.session_id or self.session_id
+        session_file = self.instagram.session_file or self.session_file
+        api_key = self.instagram.api_key
+        return InstagramAuthSettings(
+            username=username,
+            password=password,
+            session_id=session_id,
+            session_file=session_file,
+            api_key=api_key,
+        )
+
+    @property
+    def session_path(self) -> Path | None:
+        """Return the resolved Path object for the session file if configured.
+
+        Returns
+        -------
+        Path or None
+            Resolved path to the session file, or None if unspecified.
+        """
+        auth = self.effective_instagram_auth
+        return Path(auth.session_file).expanduser().resolve() if auth.session_file else None

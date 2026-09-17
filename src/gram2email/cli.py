@@ -11,7 +11,7 @@ from pathlib import Path
 
 from jsonargparse import ActionConfigFile, ArgumentParser
 
-from gram2email.config import AppSettings, SMTPSettings, User
+from gram2email.config import AppSettings, InstagramAuthSettings, SMTPSettings, User
 from gram2email.pipeline import run_pipeline
 
 
@@ -33,6 +33,11 @@ def build_parser() -> ArgumentParser:
         "--config",
         action=ActionConfigFile,
         help="Path to YAML or JSON configuration file.",
+    )
+    parser.add_argument(
+        "--login",
+        action="store_true",
+        help="Perform interactive Instagram login to generate and save a session file.",
     )
     parser.add_class_arguments(AppSettings, as_group=False)
     return parser
@@ -61,6 +66,12 @@ def parse_args_to_settings(args: Sequence[str] | None = None) -> AppSettings:
         smtp_dict = inst.smtp.as_dict() if hasattr(inst.smtp, "as_dict") else dict(inst.smtp)
         smtp_obj = SMTPSettings(**smtp_dict)
 
+    if isinstance(inst.instagram, InstagramAuthSettings):
+        ig_obj = inst.instagram
+    else:
+        ig_dict = inst.instagram.as_dict() if hasattr(inst.instagram, "as_dict") else dict(inst.instagram)
+        ig_obj = InstagramAuthSettings(**ig_dict)
+
     user_objs: list[User] = []
     for u in inst.users:
         if isinstance(u, User):
@@ -73,26 +84,78 @@ def parse_args_to_settings(args: Sequence[str] | None = None) -> AppSettings:
             user_objs.append(User(email=u))
 
     state_file = inst.state_file
+    session_file = ig_obj.session_file or inst.session_file
     if getattr(cfg, "config", None):
+        config_entry = cfg.config[0] if isinstance(cfg.config, list) else cfg.config
+        config_dir = Path(str(config_entry)).resolve().parent
         state_path_obj = Path(state_file)
         if not state_path_obj.is_absolute():
-            config_entry = cfg.config[0] if isinstance(cfg.config, list) else cfg.config
-            config_dir = Path(str(config_entry)).resolve().parent
             state_file = str(config_dir / state_path_obj)
+        if session_file:
+            sess_path_obj = Path(session_file)
+            if not sess_path_obj.is_absolute():
+                session_file = str(config_dir / sess_path_obj)
+                ig_obj.session_file = session_file
 
     return AppSettings(
         accounts=inst.accounts,
         users=user_objs,
         recipients=inst.recipients,
         smtp=smtp_obj,
+        instagram=ig_obj,
         max_posts_per_account=inst.max_posts_per_account,
         state_file=state_file,
-        session_file=inst.session_file,
+        session_id=inst.session_id,
+        session_file=session_file,
+        instagram_user=inst.instagram_user,
         download_media=inst.download_media,
         dry_run=inst.dry_run,
         verbose=inst.verbose,
         request_timeout=inst.request_timeout,
     )
+
+
+def handle_interactive_login(settings: AppSettings) -> int:
+    """Perform interactive login and save the session file.
+
+    Parameters
+    ----------
+    settings : AppSettings
+        Application settings containing Instagram credentials.
+
+    Returns
+    -------
+    int
+        Exit code (0 for success, 1 for failure).
+    """
+    import getpass
+
+    from gram2email.instagram import create_loader
+
+    auth = settings.effective_instagram_auth
+    username = auth.username
+    if not username:
+        username = input("Enter Instagram username: ").strip()
+
+    password = auth.password
+    if not password:
+        password = getpass.getpass(f"Enter Instagram password for @{username}: ").strip()
+
+    target_session = auth.session_file or str(Path(settings.state_path).parent / f"session-{username}")
+
+    print(f"Authenticating with Instagram as @{username}...")
+    try:
+        create_loader(
+            username=username,
+            password=password,
+            session_file=target_session,
+            interactive=True,
+        )
+        print(f"Login successful! Session saved to: {target_session}")
+        return 0
+    except Exception as exc:
+        print(f"Login failed: {exc}", file=sys.stderr)
+        return 1
 
 
 def setup_logging(verbose: bool = False) -> None:
@@ -124,13 +187,18 @@ def main(args: Sequence[str] | None = None) -> int:
     int
         Exit code (0 for success, non-zero for error).
     """
+    parser = build_parser()
     try:
-        settings = parse_args_to_settings(args)
+        cfg = parser.parse_args(args=args)
     except SystemExit as exc:
         return exc.code if isinstance(exc.code, int) else 0
 
+    settings = parse_args_to_settings(args)
     setup_logging(verbose=settings.verbose)
     logger = logging.getLogger("gram2email")
+
+    if getattr(cfg, "login", False):
+        return handle_interactive_login(settings)
 
     if not settings.accounts:
         logger.error("No target accounts specified. Use --accounts or --config.")

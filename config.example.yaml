@@ -59,15 +59,30 @@ max_posts_per_account: 5
 # If relative, it will automatically be stored in the same directory as this config file.
 state_file: "seen_posts.json"
 
-# Optional: Instagram Authentication Session
+# Instagram Authentication & Credentials
 # Meta / Instagram blocks unauthenticated scrapers with HTTP 429 Too Many Requests.
-# To authenticate, you can provide your browser session ID or a session file:
+# You can authenticate using any of the following methods:
 #
-# Option A: Paste the 'sessionid' cookie from your browser (Developer Tools -> Application -> Cookies):
-# session_id: "your_sessionid_cookie_value"
+# Method 1 (Direct Account Credentials):
+# Provide your Instagram username and password. The application will log in once,
+# automatically save the session file locally, and reuse the saved session on future runs.
+# instagram:
+#   username: "your_instagram_username"
+#   password: "your_instagram_password"
+#   session_file: "instagram_session"
 #
-# Option B: Path to an Instaloader session file (created via `instaloader --login your_username`) or cookie JSON:
-# session_file: "~/.config/instaloader/session-your_username"
+# Method 2 (Browser Cookie / Session ID - Easiest):
+# Paste the 'sessionid' cookie from your browser (Developer Tools -> Application -> Cookies):
+# instagram:
+#   session_id: "your_sessionid_cookie_value"
+#
+# Method 3 (Interactive CLI login):
+# Run `gram2email --config config.yaml --login` to authenticate interactively (supports 2FA).
+#
+# Method 4 (API Key):
+# If using a third-party scraper API (RapidAPI, Apify, etc.) or developer token:
+# instagram:
+#   api_key: "your_api_key"
 
 # Download and embed images inline directly into the email body (CID attachments)
 download_media: true

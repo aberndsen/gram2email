@@ -146,3 +146,23 @@ def test_create_loader_with_json_session_file(tmp_path):
     assert loader.context._session.cookies.get("sessionid") == "json_sess_id"
     assert loader.context._session.headers.get("X-CSRFToken") == "json_csrf"
     assert loader.context.username == "jsonuser"
+
+
+def test_create_loader_with_api_key():
+    loader = create_loader(api_key="secret_api_key_123")
+    assert loader.context._session.headers.get("Authorization") == "Bearer secret_api_key_123"
+    assert loader.context._session.headers.get("X-API-Key") == "secret_api_key_123"
+
+
+@patch("instaloader.Instaloader.login")
+@patch("instaloader.Instaloader.save_session_to_file")
+def test_create_loader_with_credentials(mock_save, mock_login, tmp_path):
+    session_file = tmp_path / "session-testuser"
+    loader = create_loader(
+        username="testuser",
+        password="testpassword",
+        session_file=str(session_file),
+    )
+    mock_login.assert_called_once_with("testuser", "testpassword")
+    mock_save.assert_called_once()
+    assert loader is not None

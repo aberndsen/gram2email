@@ -104,3 +104,10 @@ dry_run: true
 def test_main_no_accounts():
     exit_code = main(["--accounts", "[]"])
     assert exit_code == 1
+
+
+@patch("gram2email.cli.handle_interactive_login", return_value=0)
+def test_main_login_flag(mock_login):
+    exit_code = main(["--login"])
+    assert exit_code == 0
+    mock_login.assert_called_once()

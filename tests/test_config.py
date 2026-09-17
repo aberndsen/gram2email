@@ -60,3 +60,22 @@ def test_app_settings_defaults():
     assert settings.download_media is True
     assert settings.dry_run is False
     assert settings.verbose is False
+
+
+def test_instagram_auth_settings():
+    from gram2email.config import InstagramAuthSettings
+
+    auth = InstagramAuthSettings(username="myuser", password="mypassword", session_id="sess123")
+    assert auth.username == "myuser"
+    assert auth.password == "mypassword"
+    assert auth.session_id == "sess123"
+
+    settings = AppSettings(
+        instagram=auth,
+        session_file="custom_session.json",
+    )
+    effective = settings.effective_instagram_auth
+    assert effective.username == "myuser"
+    assert effective.password == "mypassword"
+    assert effective.session_id == "sess123"
+    assert effective.session_file == "custom_session.json"

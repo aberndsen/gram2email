@@ -119,7 +119,11 @@ def create_loader(
     request_timeout: float = 30.0,
     session_file: str | None = None,
     session_id: str | None = None,
+    username: str | None = None,
+    password: str | None = None,
+    api_key: str | None = None,
     instagram_user: str | None = None,
+    interactive: bool = False,
 ) -> instaloader.Instaloader:
     """Create and configure an Instaloader instance.
 
@@ -135,8 +139,16 @@ def create_loader(
         Optional path to an existing Instaloader session file or cookie JSON file.
     session_id : str or None, default None
         Optional Instagram session ID cookie or full cookie header string.
+    username : str or None, default None
+        Instagram account username for direct login or session identification.
+    password : str or None, default None
+        Instagram account password for login.
+    api_key : str or None, default None
+        Optional third-party or developer API key.
     instagram_user : str or None, default None
-        Optional Instagram username corresponding to the session.
+        Optional Instagram username alias (shortcut for username).
+    interactive : bool, default False
+        Whether to prompt interactively for 2FA codes if required.
 
     Returns
     -------
@@ -146,6 +158,7 @@ def create_loader(
     from pathlib import Path
 
     effective_ua = user_agent or DEFAULT_USER_AGENT
+    effective_user = username or instagram_user
 
     loader = instaloader.Instaloader(
         download_pictures=False,
@@ -165,13 +178,17 @@ def create_loader(
     # Ensure Instagram Web App ID is present for API queries
     loader.context._session.headers["x-ig-app-id"] = DEFAULT_IG_APP_ID
 
+    if api_key and api_key.strip():
+        loader.context._session.headers["Authorization"] = f"Bearer {api_key.strip()}"
+        loader.context._session.headers["X-API-Key"] = api_key.strip()
+
     # 1. Apply session_id if provided directly
     if session_id and session_id.strip():
         cookies = parse_cookie_string(session_id)
         loader.context._session.cookies.update(cookies)
         if "csrftoken" in cookies:
             loader.context._session.headers["X-CSRFToken"] = cookies["csrftoken"]
-        loader.context.username = instagram_user or "authenticated_user"
+        loader.context.username = effective_user or "authenticated_user"
         logger.debug("Configured Instagram session from session_id cookie")
 
     # 2. Apply session_file if provided
@@ -188,35 +205,73 @@ def create_loader(
                         loader.context._session.cookies.update(cookie_data)
                         if "csrftoken" in cookie_data:
                             loader.context._session.headers["X-CSRFToken"] = cookie_data["csrftoken"]
-                        loader.context.username = instagram_user or "authenticated_user"
+                        loader.context.username = effective_user or "authenticated_user"
                         logger.debug("Loaded JSON session cookies from %s", session_path)
                 elif "=" in content:
                     cookie_data = parse_cookie_string(content)
                     loader.context._session.cookies.update(cookie_data)
-                    loader.context.username = instagram_user or "authenticated_user"
+                    loader.context.username = effective_user or "authenticated_user"
                     logger.debug("Loaded text session cookies from %s", session_path)
                 else:
-                    username = instagram_user or (
+                    uname = effective_user or (
                         session_path.name.removeprefix("session-")
                         if session_path.name.startswith("session-")
                         else session_path.stem
                     )
-                    loader.load_session_from_file(username, filename=str(session_path))
+                    loader.load_session_from_file(uname, filename=str(session_path))
                     logger.debug("Loaded Instaloader pickle session from %s", session_path)
             except Exception:
-                # Try fallback to standard pickle
                 try:
-                    username = instagram_user or (
+                    uname = effective_user or (
                         session_path.name.removeprefix("session-")
                         if session_path.name.startswith("session-")
                         else session_path.stem
                     )
-                    loader.load_session_from_file(username, filename=str(session_path))
+                    loader.load_session_from_file(uname, filename=str(session_path))
                     logger.debug("Loaded Instaloader pickle session from %s", session_path)
                 except Exception as exc:
                     logger.warning("Failed to load session file %s: %s", session_path, exc)
         else:
             logger.warning("Session file does not exist: %s", session_path)
+
+    # 3. Direct login with username & password if not already authenticated
+    if not loader.context.is_logged_in and effective_user and password:
+        target_path = (
+            Path(session_file).expanduser().resolve()
+            if session_file
+            else Path(instaloader.instaloader.get_default_session_filename(effective_user))
+        )
+        if target_path.is_file():
+            try:
+                loader.load_session_from_file(effective_user, filename=str(target_path))
+                logger.debug("Loaded existing cached session from %s", target_path)
+            except Exception as exc:
+                logger.warning("Cached session %s failed to load (%s); logging in...", target_path, exc)
+
+        if not loader.context.is_logged_in:
+            try:
+                logger.info("Logging into Instagram as @%s", effective_user)
+                loader.login(effective_user, password)
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                loader.save_session_to_file(str(target_path))
+                logger.info("Successfully logged in and saved session to %s", target_path)
+            except instaloader.TwoFactorAuthRequiredException as exc:
+                if interactive:
+                    code = input(f"Enter Instagram 2FA security code for @{effective_user}: ").strip()
+                    loader.two_factor_login(code)
+                    target_path.parent.mkdir(parents=True, exist_ok=True)
+                    loader.save_session_to_file(str(target_path))
+                    logger.info("Successfully completed 2FA login and saved session to %s", target_path)
+                else:
+                    raise RuntimeError(
+                        f"Instagram 2FA is required for account @{effective_user}. "
+                        "Run `gram2email --login` interactively once to authenticate."
+                    ) from exc
+            except instaloader.BadCredentialsException as exc:
+                raise ValueError(f"Invalid Instagram credentials for @{effective_user}.") from exc
+            except Exception as exc:
+                logger.error("Instagram login failed for @{effective_user}: %s", exc)
+                raise
 
     return loader
 

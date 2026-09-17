@@ -74,11 +74,14 @@ def run_pipeline(
     seen_posts = load_seen_posts(state_path)
     total_processed = 0
 
+    auth = settings.effective_instagram_auth
     loader = create_loader(
         request_timeout=float(settings.request_timeout),
-        session_file=settings.session_file,
-        session_id=settings.session_id,
-        instagram_user=settings.instagram_user,
+        session_file=auth.session_file,
+        session_id=auth.session_id,
+        username=auth.username,
+        password=auth.password,
+        api_key=auth.api_key,
     )
 
     for account in settings.accounts:
