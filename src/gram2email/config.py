@@ -4,6 +4,7 @@ Defines typed dataclasses for application settings, SMTP configuration,
 and runtime parameters.
 """
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -15,7 +16,7 @@ class SMTPSettings:
     Parameters
     ----------
     host : str, default "smtp.gmail.com"
-        SMTP server hostname.
+        SMTP server hostname. Defaults to "smtp.gmail.com" or `SMTP_HOST` env var.
     port : int, default 587
         SMTP server port (e.g., 587 for STARTTLS, 465 for SSL).
     username : str, default ""
@@ -32,13 +33,17 @@ class SMTPSettings:
         Connection timeout in seconds.
     """
 
-    host: str = "smtp.gmail.com"
-    port: int = 587
-    username: str = ""
-    password: str = ""
-    sender: str = ""
-    use_tls: bool = True
-    use_ssl: bool = False
+    host: str = field(default_factory=lambda: os.getenv("SMTP_HOST", "smtp.gmail.com"))
+    port: int = field(default_factory=lambda: int(os.getenv("SMTP_PORT", "587")))
+    username: str = field(default_factory=lambda: os.getenv("SMTP_USER", os.getenv("SMTP_USERNAME", "")))
+    password: str = field(default_factory=lambda: os.getenv("SMTP_PASSWORD", ""))
+    sender: str = field(default_factory=lambda: os.getenv("SMTP_SENDER", ""))
+    use_tls: bool = field(
+        default_factory=lambda: os.getenv("SMTP_USE_TLS", "true").lower() in ("true", "1", "yes")
+    )
+    use_ssl: bool = field(
+        default_factory=lambda: os.getenv("SMTP_USE_SSL", "false").lower() in ("true", "1", "yes")
+    )
     timeout: int = 30
 
     @property
