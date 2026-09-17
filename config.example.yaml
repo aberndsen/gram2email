@@ -1,0 +1,76 @@
+# =====================================================================
+# Gram2Email Configuration Example
+# =====================================================================
+# Copy this file to `config.yaml` and fill in your details:
+#   cp config.example.yaml config.yaml
+# Run with:
+#   uv run gram2email --config config.yaml
+# Or test with dry run:
+#   uv run gram2email --config config.yaml --dry_run true
+# =====================================================================
+
+# Public Instagram accounts to follow (without '@')
+accounts:
+  - natgeo
+  - nasa
+
+# List of users receiving the emails (with optional display names)
+users:
+  - email: "alice@example.com"
+    name: "Alice Smith"
+  - email: "bob@example.com"
+    name: "Bob Jones"
+
+# Optional: List of raw email addresses (alternative/additional to `users`)
+# recipients:
+#   - someone@example.com
+
+# SMTP Server Settings
+smtp:
+  # Hostname of your SMTP provider:
+  # - Gmail: smtp.gmail.com (port 587, use_tls: true)
+  # - Fastmail: smtp.fastmail.com (port 465, use_ssl: true)
+  # - Outlook / Office365: smtp.office365.com (port 587, use_tls: true)
+  # - iCloud: smtp.mail.me.com (port 587, use_tls: true)
+  host: "smtp.gmail.com"
+  port: 587
+
+  # SMTP login credentials:
+  # For Gmail, generate a 16-character App Password at:
+  # https://myaccount.google.com/apppasswords
+  username: "your-email@gmail.com"
+  password: "your-app-password"
+
+  # Optional: 'From' email header (defaults to username if omitted)
+  sender: "your-email@gmail.com"
+
+  # Connection security
+  use_tls: true      # Set true for STARTTLS (typical for port 587)
+  use_ssl: false     # Set true for direct SSL (typical for port 465)
+  timeout: 30        # Network timeout in seconds
+
+# Maximum number of recent posts to inspect per account on each run (default: 5).
+# On the initial run, all 5 recent posts are emailed and recorded.
+# On subsequent runs (e.g. every 10 minutes), only newly published posts not yet
+# in seen_posts.json will be emailed.
+max_posts_per_account: 5
+
+# Path to the JSON state file where seen post shortcodes are remembered.
+# If relative, it will automatically be stored in the same directory as this config file.
+state_file: "seen_posts.json"
+
+# Optional: Path to an existing Instaloader session file if you want to run authenticated
+# (e.g. created via `instaloader -l your_username`)
+# session_file: "~/.config/instaloader/session-your_username"
+
+# Download and embed images inline directly into the email body (CID attachments)
+download_media: true
+
+# Network timeout in seconds for scraper requests
+request_timeout: 30
+
+# If true, finds new posts and prepares emails without actually sending them or updating state
+dry_run: false
+
+# Enable verbose / debug logging
+verbose: false

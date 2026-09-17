@@ -1,0 +1,49 @@
+[project]
+name = "gram2email"
+version = "0.1.0"
+description = "Fetch public Instagram posts and email their contents via cron"
+readme = "README.md"
+authors = [
+    { name = "Aaron Berndsen", email = "aaron.berndsen@onsights.io" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "instaloader>=4.15.3",
+    "jsonargparse[signatures]>=4.27.0",
+    "pyyaml>=6.0.3",
+    "requests>=2.34.2",
+]
+
+[project.scripts]
+gram2email = "gram2email.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.11.2,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.16.8",
+    "ty>=0.0.81",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "N",   # pep8-naming
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+]
+ignore = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
