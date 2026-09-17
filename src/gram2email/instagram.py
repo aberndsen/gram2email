@@ -6,6 +6,7 @@ extracting post details and media, and downloading images for email inclusion.
 
 import logging
 import mimetypes
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -86,6 +87,10 @@ DEFAULT_USER_AGENT = (
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
 DEFAULT_IG_APP_ID = "936619743392459"
+DEFAULT_ASBD_ID = "129477"
+KNOWN_USER_IDS: dict[str, str] = {
+    "ruralraiders": "2176213596",
+}
 
 
 def parse_cookie_string(cookie_input: str) -> dict[str, str]:
@@ -170,13 +175,14 @@ def create_loader(
         compress_json=False,
         max_connection_attempts=max_connection_attempts,
         request_timeout=request_timeout,
-        fatal_status_codes=[429, 401],
+        fatal_status_codes=None,
         sleep=False,
         user_agent=effective_ua,
     )
 
-    # Ensure Instagram Web App ID is present for API queries
+    # Ensure Instagram Web App ID and ASBD ID are present for API queries
     loader.context._session.headers["x-ig-app-id"] = DEFAULT_IG_APP_ID
+    loader.context._session.headers["x-asbd-id"] = DEFAULT_ASBD_ID
 
     if api_key and api_key.strip():
         loader.context._session.headers["Authorization"] = f"Bearer {api_key.strip()}"
@@ -247,6 +253,12 @@ def create_loader(
                     logger.debug("Loaded Instaloader pickle session from %s", session_path)
                 except Exception as exc:
                     logger.warning("Failed to load session file %s: %s", session_path, exc)
+            # Ensure critical web headers are present after loading session
+            loader.context._session.headers["x-ig-app-id"] = DEFAULT_IG_APP_ID
+            loader.context._session.headers["x-asbd-id"] = DEFAULT_ASBD_ID
+            csrf = loader.context._session.cookies.get_dict().get("csrftoken", "")
+            if csrf:
+                loader.context._session.headers["X-CSRFToken"] = csrf
         else:
             logger.warning("Session file does not exist: %s", session_path)
 
@@ -416,6 +428,218 @@ def extract_media_items(
     return items
 
 
+def resolve_user_id(account: str, session: requests.Session | None = None) -> str | None:
+    """Resolve an Instagram account username to its numeric profile ID.
+
+    Parameters
+    ----------
+    account : str
+        Instagram username handle.
+    session : requests.Session or None, default None
+        HTTP session to use for requests.
+
+    Returns
+    -------
+    str or None
+        Numeric profile ID if resolved, otherwise None.
+    """
+    clean_account = account.lstrip("@").strip().lower()
+    if clean_account in KNOWN_USER_IDS:
+        return KNOWN_USER_IDS[clean_account]
+
+    s = session or requests.Session()
+
+    # 1. HTML profile scrape
+    try:
+        url = f"https://www.instagram.com/{clean_account}/"
+        headers = {
+            "User-Agent": DEFAULT_USER_AGENT,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+        }
+        resp = s.get(url, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            for pattern in (
+                r'"profile_id":"(\d+)"',
+                r'"props":.*?"id":"(\d+)"',
+                r'"target_id":"(\d+)"',
+                r'"user_id":"(\d+)"',
+            ):
+                match = re.search(pattern, resp.text)
+                if match:
+                    uid = match.group(1)
+                    KNOWN_USER_IDS[clean_account] = uid
+                    return uid
+    except Exception as exc:
+        logger.debug("HTML profile ID resolution failed for @%s: %s", clean_account, exc)
+
+    # 2. Modern search endpoint
+    try:
+        search_url = "https://www.instagram.com/api/v1/web/search/topsearch/"
+        headers = {
+            "User-Agent": DEFAULT_USER_AGENT,
+            "x-ig-app-id": DEFAULT_IG_APP_ID,
+            "x-asbd-id": DEFAULT_ASBD_ID,
+            "X-Requested-With": "XMLHttpRequest",
+            "Referer": f"https://www.instagram.com/{clean_account}/",
+        }
+        csrf = s.cookies.get_dict().get("csrftoken", "")
+        if csrf:
+            headers["X-CSRFToken"] = csrf
+        resp = s.get(
+            search_url,
+            headers=headers,
+            params={"context": "blended", "query": clean_account},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            for user_entry in data.get("users", []):
+                user = user_entry.get("user", {})
+                if user.get("username", "").lower() == clean_account:
+                    uid = str(user.get("pk") or user.get("id"))
+                    if uid:
+                        KNOWN_USER_IDS[clean_account] = uid
+                        return uid
+    except Exception as exc:
+        logger.debug("Search API ID resolution failed for @%s: %s", clean_account, exc)
+
+    return None
+
+
+def fetch_posts_via_user_feed(
+    user_id: str,
+    username: str,
+    context: instaloader.InstaloaderContext,
+    max_posts: int = 5,
+    download_media: bool = True,
+) -> list[InstagramPost]:
+    """Fetch recent posts for a user via Instagram REST feed endpoint.
+
+    Parameters
+    ----------
+    user_id : str
+        Numeric profile user ID.
+    username : str
+        Username handle for the profile.
+    context : instaloader.InstaloaderContext
+        Active Instaloader context.
+    max_posts : int, default 5
+        Maximum posts to retrieve.
+    download_media : bool, default True
+        Whether to download media bytes.
+
+    Returns
+    -------
+    list of InstagramPost
+        Parsed post objects.
+    """
+    session = getattr(context, "_session", None)
+    if not session:
+        return []
+
+    url = f"https://www.instagram.com/api/v1/feed/user/{user_id}/"
+    headers = {
+        "User-Agent": context.user_agent or DEFAULT_USER_AGENT,
+        "x-ig-app-id": DEFAULT_IG_APP_ID,
+        "x-asbd-id": DEFAULT_ASBD_ID,
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer": f"https://www.instagram.com/{username}/",
+    }
+    csrf = session.cookies.get_dict().get("csrftoken", "")
+    if csrf:
+        headers["X-CSRFToken"] = csrf
+
+    resp = session.get(
+        url,
+        headers=headers,
+        params={"count": max_posts},
+        timeout=context.request_timeout,
+    )
+    if resp.status_code != 200:
+        logger.debug(
+            "Feed endpoint returned HTTP %d for @%s: %s",
+            resp.status_code,
+            username,
+            resp.text[:200],
+        )
+        return []
+
+    data = resp.json()
+    items = data.get("items", [])
+    posts: list[InstagramPost] = []
+    for item in items[:max_posts]:
+        try:
+            post = instaloader.Post.from_iphone_struct(context, item)
+            if hasattr(post, "_node") and isinstance(post._node, dict):
+                post._node["edge_media_to_parent_comment"] = {"count": item.get("comment_count", 0)}
+            posts.append(_convert_post(post, username, session=session, download_media=download_media))
+        except Exception as exc:
+            logger.debug("Failed to convert feed item for @%s: %s", username, exc)
+
+    return posts
+
+
+def _convert_post(
+    post: Any,
+    owner_username: str,
+    session: requests.Session | None = None,
+    download_media: bool = True,
+) -> InstagramPost:
+    """Convert an Instaloader Post object into a normalized InstagramPost dataclass.
+
+    Parameters
+    ----------
+    post : Any
+        Instaloader Post object.
+    owner_username : str
+        Account username for post ownership.
+    session : requests.Session or None, default None
+        Session used to download media files.
+    download_media : bool, default True
+        Whether to fetch image payload bytes.
+
+    Returns
+    -------
+    InstagramPost
+        Normalized post representation.
+    """
+    shortcode = getattr(post, "shortcode", "")
+    caption = getattr(post, "caption", "") or ""
+    date_utc = getattr(post, "date_utc", datetime.now())
+    post_url = f"https://www.instagram.com/p/{shortcode}/"
+    is_video = getattr(post, "is_video", False)
+    media_items = extract_media_items(post, session=session, download=download_media)
+
+    likes = 0
+    try:
+        likes = post.likes
+    except Exception:
+        likes = getattr(post, "_node", {}).get("like_count", 0)
+
+    comments = 0
+    try:
+        comments = post.comments
+    except Exception:
+        node = getattr(post, "_node", {})
+        comments_val = node.get("comments") or node.get("comment_count", 0)
+        comments = comments_val.get("count", 0) if isinstance(comments_val, dict) else (comments_val or 0)
+
+    return InstagramPost(
+        shortcode=shortcode,
+        url=post_url,
+        owner_username=owner_username,
+        caption=caption,
+        date_utc=date_utc,
+        media_items=media_items,
+        is_video=is_video,
+        likes=likes,
+        comments=comments,
+    )
+
+
 def fetch_recent_posts(
     account: str,
     max_posts: int = 5,
@@ -423,6 +647,12 @@ def fetch_recent_posts(
     download_media: bool = True,
 ) -> list[InstagramPost]:
     """Fetch the most recent posts from a public Instagram account.
+
+    Employs a tiered retrieval strategy:
+    1. Standard Instaloader Profile.from_username query.
+    2. Direct GraphQL timeline query via lightweight Profile node (bypassing
+       web_profile_info 429 throttling when logged in).
+    3. Authenticated REST feed endpoint (/api/v1/feed/user/{user_id}/).
 
     Parameters
     ----------
@@ -443,89 +673,99 @@ def fetch_recent_posts(
     Raises
     ------
     ValueError
-        If the profile does not exist or is private.
+        If the profile does not exist, is private, or access is blocked.
     """
     clean_account = account.lstrip("@").strip()
     inst = loader or create_loader()
-
-    logger.debug("Querying profile for @%s", clean_account)
-    profile = None
-    try:
-        profile = instaloader.Profile.from_username(inst.context, clean_account)
-    except Exception as exc:
-        logger.debug(
-            "Direct profile query for @%s failed (%s); trying search resolver fallback...",
-            clean_account,
-            exc,
-        )
-        try:
-            results = instaloader.TopSearchResults(inst.context, clean_account)
-            for p in results.get_profiles():
-                if p.username.lower() == clean_account.lower():
-                    profile = p
-                    break
-        except Exception as search_exc:
-            logger.debug("Search resolver fallback failed for @%s: %s", clean_account, search_exc)
-
-        if profile is None:
-            if "429" in str(exc) and not inst.context.is_logged_in:
-                logger.error(
-                    "Instagram blocked unauthenticated access to @%s with HTTP 429 Too Many Requests. "
-                    "Meta requires an authenticated session to view profile posts. "
-                    "Please configure 'session_id' or 'session_file' in settings.",
-                    clean_account,
-                )
-                raise ValueError(
-                    f"Instagram blocked anonymous access to @{clean_account} (HTTP 429). "
-                    "Configure an Instagram session ('session_id' or 'session_file') in settings."
-                ) from exc
-            if isinstance(exc, instaloader.ProfileNotExistsException):
-                raise ValueError(f"Instagram account @{clean_account} does not exist.") from exc
-            if isinstance(exc, instaloader.LoginRequiredException):
-                raise ValueError(
-                    f"Instagram account @{clean_account} requires login to view "
-                    "(profile may be private or rate-limited)."
-                ) from exc
-            logger.error("Failed to load profile @%s: %s", clean_account, exc)
-            raise
-
-    if profile.is_private:
-        raise ValueError(f"Instagram account @{clean_account} is private. Cannot fetch posts anonymously.")
-
-    posts: list[InstagramPost] = []
     session = getattr(inst.context, "_session", None)
 
+    logger.debug("Querying posts for @%s", clean_account)
+
+    # Attempt 1: Standard Instaloader Profile.from_username
     try:
+        profile = instaloader.Profile.from_username(inst.context, clean_account)
+        if profile.is_private:
+            raise ValueError(f"Instagram account @{clean_account} is private.")
+        posts: list[InstagramPost] = []
         for idx, post in enumerate(profile.get_posts()):
             if idx >= max_posts:
                 break
-
-            shortcode = post.shortcode
-            caption = post.caption or ""
-            date_utc = post.date_utc
-            post_url = f"https://www.instagram.com/p/{shortcode}/"
-            is_video = post.is_video
-
-            media_items = extract_media_items(post, session=session, download=download_media)
-
-            posts.append(
-                InstagramPost(
-                    shortcode=shortcode,
-                    url=post_url,
-                    owner_username=clean_account,
-                    caption=caption,
-                    date_utc=date_utc,
-                    media_items=media_items,
-                    is_video=is_video,
-                    likes=post.likes,
-                    comments=post.comments,
-                )
-            )
+            posts.append(_convert_post(post, clean_account, session=session, download_media=download_media))
+        if posts:
+            return posts
+    except ValueError:
+        raise
     except Exception as exc:
-        logger.warning(
-            "Encountered error while iterating posts for @%s: %s",
+        logger.debug(
+            "Standard profile query for @%s failed (%s); trying fallback strategies...",
             clean_account,
             exc,
         )
 
-    return posts
+    # Attempt 2: If logged in, query GraphQL timeline directly via lightweight Profile node
+    # This bypasses web_profile_info completely and avoids HTTP 429
+    if inst.context.is_logged_in:
+        try:
+            logger.debug("Attempting direct GraphQL timeline fetch for @%s", clean_account)
+            user_id = resolve_user_id(clean_account, session=session) or "0"
+            profile_direct = instaloader.Profile(
+                inst.context,
+                {
+                    "username": clean_account,
+                    "id": user_id,
+                    "is_private": False,
+                },
+            )
+            profile_direct._has_full_metadata = True
+            posts = []
+            for idx, post in enumerate(profile_direct.get_posts()):
+                if idx >= max_posts:
+                    break
+                posts.append(
+                    _convert_post(post, clean_account, session=session, download_media=download_media)
+                )
+            if posts:
+                logger.debug(
+                    "Retrieved %d posts via direct GraphQL timeline for @%s",
+                    len(posts),
+                    clean_account,
+                )
+                return posts
+        except Exception as gql_exc:
+            logger.debug("Direct GraphQL timeline fetch failed for @%s: %s", clean_account, gql_exc)
+
+    # Attempt 3: User feed REST API fallback (/api/v1/feed/user/{user_id}/)
+    try:
+        user_id = resolve_user_id(clean_account, session=session)
+        if user_id:
+            logger.debug("Attempting user feed endpoint for @%s (id: %s)...", clean_account, user_id)
+            feed_posts = fetch_posts_via_user_feed(
+                user_id=user_id,
+                username=clean_account,
+                context=inst.context,
+                max_posts=max_posts,
+                download_media=download_media,
+            )
+            if feed_posts:
+                logger.debug(
+                    "Retrieved %d posts via user feed endpoint for @%s",
+                    len(feed_posts),
+                    clean_account,
+                )
+                return feed_posts
+    except Exception as feed_exc:
+        logger.debug("User feed fallback failed for @%s: %s", clean_account, feed_exc)
+
+    # All attempts failed: provide actionable diagnostics
+    if not inst.context.is_logged_in:
+        raise ValueError(
+            f"Instagram blocked unauthenticated access to @{clean_account} (HTTP 429/401). "
+            "Meta requires an authenticated session to view profile posts. "
+            "Configure an Instagram session ('session_file' or 'session_id') in settings."
+        )
+    raise ValueError(
+        f"Failed to retrieve posts for @{clean_account} using authenticated session. "
+        "The burner account may need to be verified in a browser (e.g. log into https://instagram.com "
+        "with @kneedme2026 once to dismiss onboarding/challenge), or the profile may be temporarily "
+        "restricted by Meta."
+    )

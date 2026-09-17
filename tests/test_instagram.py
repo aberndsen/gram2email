@@ -9,7 +9,9 @@ from gram2email.instagram import (
     create_loader,
     download_media_content,
     extract_media_items,
+    fetch_posts_via_user_feed,
     fetch_recent_posts,
+    resolve_user_id,
 )
 
 
@@ -166,3 +168,105 @@ def test_create_loader_with_credentials(mock_save, mock_login, tmp_path):
     mock_login.assert_called_once_with("testuser", "testpassword")
     mock_save.assert_called_once()
     assert loader is not None
+
+
+def test_resolve_user_id_known():
+    assert resolve_user_id("ruralraiders") == "2176213596"
+    assert resolve_user_id("@ruralraiders") == "2176213596"
+
+
+def test_resolve_user_id_html():
+    mock_session = MagicMock()
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.text = '<html><script>{"profile_id":"99887766"}</script></html>'
+    mock_session.get.return_value = mock_response
+
+    uid = resolve_user_id("some_account", session=mock_session)
+    assert uid == "99887766"
+
+
+def test_resolve_user_id_search():
+    mock_session = MagicMock()
+    mock_resp_html = MagicMock()
+    mock_resp_html.status_code = 404
+    mock_resp_html.text = "Not found"
+
+    mock_resp_search = MagicMock()
+    mock_resp_search.status_code = 200
+    mock_resp_search.json.return_value = {"users": [{"user": {"username": "target_acc", "pk": 11223344}}]}
+    mock_session.get.side_effect = [mock_resp_html, mock_resp_search]
+    mock_session.cookies.get_dict.return_value = {}
+
+    uid = resolve_user_id("target_acc", session=mock_session)
+    assert uid == "11223344"
+
+
+def test_fetch_posts_via_user_feed_success():
+    mock_context = MagicMock()
+    mock_session = MagicMock()
+    mock_context._session = mock_session
+    mock_context.user_agent = "TestUA"
+    mock_context.request_timeout = 10.0
+
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "items": [
+            {
+                "code": "FEEDPOST1",
+                "pk": 12345,
+                "media_type": 1,
+                "taken_at": 1700000000,
+                "caption": {"text": "Feed post caption"},
+                "has_liked": False,
+                "like_count": 15,
+                "comment_count": 3,
+                "image_versions2": {"candidates": [{"url": "https://example.com/img.jpg"}]},
+            }
+        ]
+    }
+    mock_session.get.return_value = mock_response
+    mock_session.cookies.get_dict.return_value = {}
+
+    posts = fetch_posts_via_user_feed("12345", "testuser", mock_context, max_posts=1, download_media=False)
+    assert len(posts) == 1
+    assert posts[0].shortcode == "FEEDPOST1"
+    assert posts[0].caption == "Feed post caption"
+    assert posts[0].owner_username == "testuser"
+
+
+@patch("instaloader.Profile.from_username", side_effect=Exception("429 Too Many Requests"))
+@patch("instaloader.Profile.get_posts")
+def test_fetch_recent_posts_graphql_fallback_when_logged_in(mock_get_posts, mock_from_username):
+    mock_loader = MagicMock()
+    mock_loader.context.is_logged_in = True
+
+    mock_post = MagicMock()
+    mock_post.shortcode = "GQL123"
+    mock_post.caption = "GraphQL post caption"
+    mock_post.date_utc = datetime(2026, 9, 17, 12, 0, 0, tzinfo=UTC)
+    mock_post.is_video = False
+    mock_post.likes = 40
+    mock_post.comments = 5
+    mock_post.typename = "GraphImage"
+    mock_post.url = "https://example.com/image.jpg"
+
+    mock_get_posts.return_value = [mock_post]
+
+    with patch("gram2email.instagram.download_media_content", return_value=(None, "image/jpeg")):
+        posts = fetch_recent_posts("test_user", max_posts=1, loader=mock_loader, download_media=False)
+
+    assert len(posts) == 1
+    assert posts[0].shortcode == "GQL123"
+    assert posts[0].caption == "GraphQL post caption"
+
+
+@patch("instaloader.Profile.from_username", side_effect=Exception("429 Too Many Requests"))
+def test_fetch_recent_posts_unauthenticated_error(mock_from_username):
+    mock_loader = MagicMock()
+    mock_loader.context.is_logged_in = False
+    mock_loader.context._session = MagicMock()
+
+    with pytest.raises(ValueError, match="Instagram blocked unauthenticated access"):
+        fetch_recent_posts("anon_test_user", loader=mock_loader, download_media=False)
