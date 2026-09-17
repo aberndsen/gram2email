@@ -185,11 +185,27 @@ def create_loader(
     # 1. Apply session_id if provided directly
     if session_id and session_id.strip():
         cookies = parse_cookie_string(session_id)
-        loader.context._session.cookies.update(cookies)
+        if "ds_user_id" not in cookies and "sessionid" in cookies:
+            raw_sid = cookies["sessionid"]
+            prefix = raw_sid.split("%3A")[0].split(":")[0]
+            if prefix.isdigit():
+                cookies["ds_user_id"] = prefix
+        for k, v in cookies.items():
+            loader.context._session.cookies.set(k, v)
         if "csrftoken" in cookies:
             loader.context._session.headers["X-CSRFToken"] = cookies["csrftoken"]
-        loader.context.username = effective_user or "authenticated_user"
-        logger.debug("Configured Instagram session from session_id cookie")
+        try:
+            loader.context._session.get("https://www.instagram.com/", timeout=10)
+            csrf = loader.context._session.cookies.get_dict().get("csrftoken", "")
+            if csrf:
+                loader.context._session.headers["X-CSRFToken"] = csrf
+        except Exception as exc:
+            logger.debug("Initial session ping to instagram.com failed: %s", exc)
+
+        loader.context.username = effective_user or (loader.test_login() or "authenticated_user")
+        logger.debug(
+            "Configured Instagram session from session_id cookie (user: %s)", loader.context.username
+        )
 
     # 2. Apply session_file if provided
     if session_file:
@@ -433,29 +449,45 @@ def fetch_recent_posts(
     inst = loader or create_loader()
 
     logger.debug("Querying profile for @%s", clean_account)
+    profile = None
     try:
         profile = instaloader.Profile.from_username(inst.context, clean_account)
-    except instaloader.ProfileNotExistsException as exc:
-        raise ValueError(f"Instagram account @{clean_account} does not exist.") from exc
-    except instaloader.LoginRequiredException as exc:
-        raise ValueError(
-            f"Instagram account @{clean_account} requires login to view "
-            "(profile may be private or rate-limited)."
-        ) from exc
     except Exception as exc:
-        if "429" in str(exc) and not inst.context.is_logged_in:
-            logger.error(
-                "Instagram blocked unauthenticated access to @%s with HTTP 429 Too Many Requests. "
-                "Meta requires an authenticated session to view profile posts. "
-                "Please configure 'session_id' or 'session_file' in settings.",
-                clean_account,
-            )
-            raise ValueError(
-                f"Instagram blocked anonymous access to @{clean_account} (HTTP 429). "
-                "Configure an Instagram session ('session_id' or 'session_file') in settings."
-            ) from exc
-        logger.error("Failed to load profile @%s: %s", clean_account, exc)
-        raise
+        logger.debug(
+            "Direct profile query for @%s failed (%s); trying search resolver fallback...",
+            clean_account,
+            exc,
+        )
+        try:
+            results = instaloader.TopSearchResults(inst.context, clean_account)
+            for p in results.get_profiles():
+                if p.username.lower() == clean_account.lower():
+                    profile = p
+                    break
+        except Exception as search_exc:
+            logger.debug("Search resolver fallback failed for @%s: %s", clean_account, search_exc)
+
+        if profile is None:
+            if "429" in str(exc) and not inst.context.is_logged_in:
+                logger.error(
+                    "Instagram blocked unauthenticated access to @%s with HTTP 429 Too Many Requests. "
+                    "Meta requires an authenticated session to view profile posts. "
+                    "Please configure 'session_id' or 'session_file' in settings.",
+                    clean_account,
+                )
+                raise ValueError(
+                    f"Instagram blocked anonymous access to @{clean_account} (HTTP 429). "
+                    "Configure an Instagram session ('session_id' or 'session_file') in settings."
+                ) from exc
+            if isinstance(exc, instaloader.ProfileNotExistsException):
+                raise ValueError(f"Instagram account @{clean_account} does not exist.") from exc
+            if isinstance(exc, instaloader.LoginRequiredException):
+                raise ValueError(
+                    f"Instagram account @{clean_account} requires login to view "
+                    "(profile may be private or rate-limited)."
+                ) from exc
+            logger.error("Failed to load profile @%s: %s", clean_account, exc)
+            raise
 
     if profile.is_private:
         raise ValueError(f"Instagram account @{clean_account} is private. Cannot fetch posts anonymously.")

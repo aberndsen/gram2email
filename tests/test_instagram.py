@@ -131,7 +131,7 @@ def test_parse_cookie_string():
 
 def test_create_loader_with_session_id():
     loader = create_loader(session_id="sessionid=abc123xyz; csrftoken=tok123", instagram_user="myuser")
-    assert loader.context._session.cookies.get("sessionid") == "abc123xyz"
+    assert loader.context._session.cookies.get_dict().get("sessionid") == "abc123xyz"
     assert loader.context._session.headers.get("X-CSRFToken") == "tok123"
     assert loader.context.username == "myuser"
 
@@ -143,7 +143,7 @@ def test_create_loader_with_json_session_file(tmp_path):
     session_file.write_text(json.dumps({"sessionid": "json_sess_id", "csrftoken": "json_csrf"}))
 
     loader = create_loader(session_file=str(session_file), instagram_user="jsonuser")
-    assert loader.context._session.cookies.get("sessionid") == "json_sess_id"
+    assert loader.context._session.cookies.get_dict().get("sessionid") == "json_sess_id"
     assert loader.context._session.headers.get("X-CSRFToken") == "json_csrf"
     assert loader.context.username == "jsonuser"
 
