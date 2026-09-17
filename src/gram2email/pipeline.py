@@ -77,6 +77,8 @@ def run_pipeline(
     loader = create_loader(
         request_timeout=float(settings.request_timeout),
         session_file=settings.session_file,
+        session_id=settings.session_id,
+        instagram_user=settings.instagram_user,
     )
 
     for account in settings.accounts:

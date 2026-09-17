@@ -81,31 +81,71 @@ class InstagramPost:
     comments: int = 0
 
 
+DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+DEFAULT_IG_APP_ID = "936619743392459"
+
+
+def parse_cookie_string(cookie_input: str) -> dict[str, str]:
+    """Parse cookie string or raw sessionid into a dictionary of cookie key-values.
+
+    Parameters
+    ----------
+    cookie_input : str
+        Cookie string (e.g., 'sessionid=xxx; ds_user_id=yyy') or standalone sessionid.
+
+    Returns
+    -------
+    dict of str to str
+        Parsed cookies dictionary.
+    """
+    clean = cookie_input.strip()
+    cookies: dict[str, str] = {}
+    if "=" in clean:
+        for part in clean.split(";"):
+            if "=" in part:
+                k, v = part.strip().split("=", 1)
+                cookies[k.strip()] = v.strip().strip('"').strip("'")
+    elif clean:
+        cookies["sessionid"] = clean
+    return cookies
+
+
 def create_loader(
     user_agent: str | None = None,
     max_connection_attempts: int = 1,
     request_timeout: float = 30.0,
     session_file: str | None = None,
+    session_id: str | None = None,
+    instagram_user: str | None = None,
 ) -> instaloader.Instaloader:
-    """Create and configure an Instaloader instance for anonymous scraping.
+    """Create and configure an Instaloader instance.
 
     Parameters
     ----------
     user_agent : str or None, default None
-        Custom HTTP User-Agent string. If None, instaloader defaults are used.
+        Custom HTTP User-Agent string. If None, a modern browser user-agent is used.
     max_connection_attempts : int, default 1
         Maximum retry attempts for requests.
     request_timeout : float, default 30.0
         Request timeout in seconds.
     session_file : str or None, default None
-        Optional path to an existing Instaloader session file.
+        Optional path to an existing Instaloader session file or cookie JSON file.
+    session_id : str or None, default None
+        Optional Instagram session ID cookie or full cookie header string.
+    instagram_user : str or None, default None
+        Optional Instagram username corresponding to the session.
 
     Returns
     -------
     instaloader.Instaloader
-        Configured Instaloader instance with anonymous read settings.
+        Configured Instaloader instance.
     """
     from pathlib import Path
+
+    effective_ua = user_agent or DEFAULT_USER_AGENT
 
     loader = instaloader.Instaloader(
         download_pictures=False,
@@ -119,15 +159,65 @@ def create_loader(
         request_timeout=request_timeout,
         fatal_status_codes=[429, 401],
         sleep=False,
-        user_agent=user_agent,
+        user_agent=effective_ua,
     )
+
+    # Ensure Instagram Web App ID is present for API queries
+    loader.context._session.headers["x-ig-app-id"] = DEFAULT_IG_APP_ID
+
+    # 1. Apply session_id if provided directly
+    if session_id and session_id.strip():
+        cookies = parse_cookie_string(session_id)
+        loader.context._session.cookies.update(cookies)
+        if "csrftoken" in cookies:
+            loader.context._session.headers["X-CSRFToken"] = cookies["csrftoken"]
+        loader.context.username = instagram_user or "authenticated_user"
+        logger.debug("Configured Instagram session from session_id cookie")
+
+    # 2. Apply session_file if provided
     if session_file:
         session_path = Path(session_file).expanduser().resolve()
-        if session_path.exists():
-            loader.load_session_from_file(session_path.stem, filename=str(session_path))
-            logger.debug("Loaded Instagram session from %s", session_path)
+        if session_path.is_file():
+            try:
+                content = session_path.read_text(encoding="utf-8").strip()
+                if content.startswith("{"):
+                    import json
+
+                    cookie_data = json.loads(content)
+                    if isinstance(cookie_data, dict):
+                        loader.context._session.cookies.update(cookie_data)
+                        if "csrftoken" in cookie_data:
+                            loader.context._session.headers["X-CSRFToken"] = cookie_data["csrftoken"]
+                        loader.context.username = instagram_user or "authenticated_user"
+                        logger.debug("Loaded JSON session cookies from %s", session_path)
+                elif "=" in content:
+                    cookie_data = parse_cookie_string(content)
+                    loader.context._session.cookies.update(cookie_data)
+                    loader.context.username = instagram_user or "authenticated_user"
+                    logger.debug("Loaded text session cookies from %s", session_path)
+                else:
+                    username = instagram_user or (
+                        session_path.name.removeprefix("session-")
+                        if session_path.name.startswith("session-")
+                        else session_path.stem
+                    )
+                    loader.load_session_from_file(username, filename=str(session_path))
+                    logger.debug("Loaded Instaloader pickle session from %s", session_path)
+            except Exception:
+                # Try fallback to standard pickle
+                try:
+                    username = instagram_user or (
+                        session_path.name.removeprefix("session-")
+                        if session_path.name.startswith("session-")
+                        else session_path.stem
+                    )
+                    loader.load_session_from_file(username, filename=str(session_path))
+                    logger.debug("Loaded Instaloader pickle session from %s", session_path)
+                except Exception as exc:
+                    logger.warning("Failed to load session file %s: %s", session_path, exc)
         else:
             logger.warning("Session file does not exist: %s", session_path)
+
     return loader
 
 
@@ -298,6 +388,17 @@ def fetch_recent_posts(
             "(profile may be private or rate-limited)."
         ) from exc
     except Exception as exc:
+        if "429" in str(exc) and not inst.context.is_logged_in:
+            logger.error(
+                "Instagram blocked unauthenticated access to @%s with HTTP 429 Too Many Requests. "
+                "Meta requires an authenticated session to view profile posts. "
+                "Please configure 'session_id' or 'session_file' in settings.",
+                clean_account,
+            )
+            raise ValueError(
+                f"Instagram blocked anonymous access to @{clean_account} (HTTP 429). "
+                "Configure an Instagram session ('session_id' or 'session_file') in settings."
+            ) from exc
         logger.error("Failed to load profile @%s: %s", clean_account, exc)
         raise
 

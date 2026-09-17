@@ -121,7 +121,9 @@ class AppSettings:
     smtp: SMTPSettings = field(default_factory=SMTPSettings)
     max_posts_per_account: int = 5
     state_file: str = "seen_posts.json"
-    session_file: str | None = None
+    session_id: str = field(default_factory=lambda: os.getenv("INSTAGRAM_SESSION_ID", ""))
+    session_file: str | None = field(default_factory=lambda: os.getenv("INSTAGRAM_SESSION_FILE", None))
+    instagram_user: str = field(default_factory=lambda: os.getenv("INSTAGRAM_USER", ""))
     download_media: bool = True
     dry_run: bool = False
     verbose: bool = False

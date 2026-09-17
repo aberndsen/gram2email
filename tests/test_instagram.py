@@ -119,3 +119,30 @@ def test_fetch_recent_posts_success(mock_from_username):
     assert posts[0].shortcode == "POST123"
     assert posts[0].caption == "Test caption"
     assert posts[0].owner_username == "public_user"
+
+
+def test_parse_cookie_string():
+    from gram2email.instagram import parse_cookie_string
+
+    assert parse_cookie_string("simple_session_id") == {"sessionid": "simple_session_id"}
+    res = parse_cookie_string("sessionid=abc123xyz; ds_user_id=45678; csrftoken=tok123")
+    assert res == {"sessionid": "abc123xyz", "ds_user_id": "45678", "csrftoken": "tok123"}
+
+
+def test_create_loader_with_session_id():
+    loader = create_loader(session_id="sessionid=abc123xyz; csrftoken=tok123", instagram_user="myuser")
+    assert loader.context._session.cookies.get("sessionid") == "abc123xyz"
+    assert loader.context._session.headers.get("X-CSRFToken") == "tok123"
+    assert loader.context.username == "myuser"
+
+
+def test_create_loader_with_json_session_file(tmp_path):
+    import json
+
+    session_file = tmp_path / "session.json"
+    session_file.write_text(json.dumps({"sessionid": "json_sess_id", "csrftoken": "json_csrf"}))
+
+    loader = create_loader(session_file=str(session_file), instagram_user="jsonuser")
+    assert loader.context._session.cookies.get("sessionid") == "json_sess_id"
+    assert loader.context._session.headers.get("X-CSRFToken") == "json_csrf"
+    assert loader.context.username == "jsonuser"

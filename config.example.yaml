@@ -59,8 +59,14 @@ max_posts_per_account: 5
 # If relative, it will automatically be stored in the same directory as this config file.
 state_file: "seen_posts.json"
 
-# Optional: Path to an existing Instaloader session file if you want to run authenticated
-# (e.g. created via `instaloader -l your_username`)
+# Optional: Instagram Authentication Session
+# Meta / Instagram blocks unauthenticated scrapers with HTTP 429 Too Many Requests.
+# To authenticate, you can provide your browser session ID or a session file:
+#
+# Option A: Paste the 'sessionid' cookie from your browser (Developer Tools -> Application -> Cookies):
+# session_id: "your_sessionid_cookie_value"
+#
+# Option B: Path to an Instaloader session file (created via `instaloader --login your_username`) or cookie JSON:
 # session_file: "~/.config/instaloader/session-your_username"
 
 # Download and embed images inline directly into the email body (CID attachments)
