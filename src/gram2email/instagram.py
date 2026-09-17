@@ -188,7 +188,7 @@ def create_loader(
         loader.context._session.headers["Authorization"] = f"Bearer {api_key.strip()}"
         loader.context._session.headers["X-API-Key"] = api_key.strip()
 
-    # 1. Apply session_id if provided directly
+    # 1. Apply session_id if provided directly (highest priority)
     if session_id and session_id.strip():
         cookies = parse_cookie_string(session_id)
         if "ds_user_id" not in cookies and "sessionid" in cookies:
@@ -213,8 +213,18 @@ def create_loader(
             "Configured Instagram session from session_id cookie (user: %s)", loader.context.username
         )
 
-    # 2. Apply session_file if provided
-    if session_file:
+        # Cache session_id to session_file if requested
+        if session_file:
+            try:
+                target_path = Path(session_file).expanduser().resolve()
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                loader.save_session_to_file(str(target_path))
+                logger.debug("Cached session_id to session file %s", target_path)
+            except Exception as save_exc:
+                logger.debug("Could not cache session to %s: %s", session_file, save_exc)
+
+    # 2. Apply session_file if provided and session_id was not supplied
+    elif session_file:
         session_path = Path(session_file).expanduser().resolve()
         if session_path.is_file():
             try:
